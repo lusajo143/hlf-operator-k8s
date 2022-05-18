@@ -1,0 +1,199 @@
+Requirements
+
+k8s cluster
+helm
+krew
+
+
+Add helm repo
+	helm repo add kfs https://kfsoftware.github.io/hlf-helm-charts --force-update
+
+Install hlf-operator
+	helm install hlf-operator --version=1.6.0 kfs/hlf-operator
+	kubectl krew install hlf
+
+Set storage environmental variable
+	export SC=$(kubectl get sc -o=jsonpath='{.items[0].metadata.name}')
+
+
+Create namespace
+	kubectl create ns fabric
+
+
+Create CAs (Creates with persistance volume with 2Gb : kubectl get pvs -A)
+	kubectl hlf ca create --storage-class=$SC --capacity=2Gi --name=org1-ca --enroll-id=enroll --enroll-pw=enrollpw --namespace=fabric
+
+	kubectl hlf ca create --storage-class=$SC --capacity=2Gi --name=org2-ca --enroll-id=enroll --enroll-pw=enrollpw --namespace=fabric
+
+	kubectl hlf ca create --storage-class=$SC --capacity=2Gi --name=ord-ca --enroll-id=enroll --enroll-pw=enrollpw --namespace=fabric
+
+
+Export docker images & versions for peer and orderer
+	export PEER=hyperleger/fabric-peer
+	export PEER_VERSION=2.4
+	export ORDER=hyperledger/fabric-orderer
+	export ORDERER_VERSION=2.4
+
+
+Register peers and order
+	kubectl hlf ca register --name=org1-ca --user=org1-peer1 --secret=peerpw --type=peer --enroll-id enroll --enroll-secret=enrollpw --mspid=Org1MSP --namespace=fabric
+
+	kubectl hlf ca register --name=org1-ca --user=org1-peer2 --secret=peerpw --type=peer --enroll-id enroll --enroll-secret=enrollpw --mspid=Org1MSP --namespace=fabric
+
+	kubectl hlf ca register --name=org2-ca --user=org2-peer1 --secret=peerpw --type=peer --enroll-id enroll --enroll-secret=enrollpw --mspid=Org2MSP --namespace=fabric
+	
+	kubectl hlf ca register --name=org2-ca --user=org2-peer2 --secret=peerpw --type=peer --enroll-id enroll --enroll-secret=enrollpw --mspid=Org2MSP --namespace=fabric
+
+	 
+
+Create peers
+	kubectl hlf peer create --storage-class=$SC --enroll-id=org1-peer1 --mspid=Org1MSP --enroll-pw=peerpw --capacity=5Gi --name=org1-peer1 --ca-name=org1-ca.fabric --namespace=fabric --statedb=couchdb --image=hyperledger/fabric-peer --version=2.4
+
+	kubectl hlf peer create --storage-class=$SC --enroll-id=org1-peer2 --mspid=Org1MSP --enroll-pw=peerpw --capacity=5Gi --name=org1-peer2 --ca-name=org1-ca.fabric --namespace=fabric --statedb=couchdb --image=hyperledger/fabric-peer --version=2.4
+
+	kubectl hlf peer create --storage-class=$SC --enroll-id=org2-peer1 --mspid=Org2MSP --enroll-pw=peerpw --capacity=5Gi --name=org2-peer1 --ca-name=org2-ca.fabric --namespace=fabric --statedb=couchdb --image=hyperledger/fabric-peer --version=2.4
+
+	kubectl hlf peer create --storage-class=$SC --enroll-id=org2-peer2 --mspid=Org2MSP --enroll-pw=peerpw --capacity=5Gi --name=org2-peer2 --ca-name=org2-ca.fabric --namespace=fabric --statedb=couchdb --image=hyperledger/fabric-peer --version=2.4
+
+ 
+
+Register and enroll organization's admins
+	kubectl hlf ca register --name=org1-ca --user=admin --secret=adminpw --type=admin --enroll-id enroll --enroll-secret=enrollpw --mspid=Org1MSP --namespace=fabric
+
+	kubectl hlf ca enroll --name=org1-ca --user=admin --secret=adminpw --ca-name ca --output org1-peer.yaml --mspid=Org1MSP --namespace=fabric
+
+	kubectl hlf ca register --name=org2-ca --user=admin --secret=adminpw --type=admin --enroll-id enroll --enroll-secret=enrollpw --mspid=Org2MSP --namespace=fabric
+
+	kubectl hlf ca enroll --name=org2-ca --user=admin --secret=adminpw --ca-name ca --output org2-peer.yaml --mspid=Org2MSP --namespace=fabric
+
+	kubectl hlf ca register --name=ord-ca --user=orderer --secret=ordererpw --type=orderer --enroll-id enroll --enroll-secret=enrollpw --mspid=OrdererMSP --namespace=fabric
+
+
+
+Create orderer node
+	kubectl hlf ordnode create --storage-class=$SC --enroll-id=orderer --mspid=OrdererMSP --enroll-pw=ordererpw --capacity=2Gi --name=ord-node1 --ca-name=ord-ca.fabric --namespace=fabric --image=hyperledger/fabric-orderer --version=2.4
+
+
+Register and Enroll orderer admin
+	kubectl hlf ca register --name=ord-ca --user=admin --secret=adminpw --type=admin --enroll-id enroll --enroll-secret=enrollpw --mspid=OrdererMSP --namespace=fabric
+
+	kubectl hlf ca enroll --name=ord-ca --user=admin --secret=adminpw --ca-name ca --output admin-ordservice.yaml --mspid=OrdererMSP --namespace=fabric
+
+	kubectl hlf ca enroll --name=ord-ca --user=admin --secret=adminpw --ca-name tlsca --output admin-tls-ordservice.yaml --mspid=OrdererMSP --namespace=fabric
+
+
+Get network connection profile
+	kubectl hlf inspect --output networkConfig.yaml -o Org1MSP -o Org2MSP -o OrdererMSP
+
+
+
+Add users to connection profile
+	kubectl hlf utils adduser --userPath=org1-peer.yaml --config=networkConfig.yaml --username=admin --mspid=Org1MSP
+
+	kubectl hlf utils adduser --userPath=org2-peer.yaml --config=networkConfig.yaml --username=admin --mspid=Org2MSP
+
+
+Create channel
+	kubectl hlf channel generate --output=mychannel.block --name=mychannel --organizations Org1MSP --organizations Org2MSP --ordererOrganizations OrdererMSP
+
+Orderer node join channel using genesis block and tls-certs
+	kubectl hlf ordnode join --block=mychannel.block --name=ord-node1 --namespace=fabric --identity=admin-tls-ordservice.yaml --namespace=fabric
+
+
+Join peers nodes to channel
+	kubectl hlf channel join --name=mychannel --config=networkConfig.yaml --user=admin -p=org1-peer1.fabric
+
+	kubectl hlf channel join --name=mychannel --config=networkConfig.yaml --user=admin -p=org1-peer2.fabric
+
+	kubectl hlf channel join --name=mychannel --config=networkConfig.yaml --user=admin -p=org2-peer1.fabric
+
+	kubectl hlf channel join --name=mychannel --config=networkConfig.yaml --user=admin -p=org2-peer2.fabric
+
+
+
+Add anchor peer
+	kubectl hlf channel addanchorpeer --channel=mychannel --config=networkConfig.yaml --user=admin --peer=org1-peer1.fabric
+
+	kubectl hlf channel addanchorpeer --channel=mychannel --config=networkConfig.yaml --user=admin --peer=org2-peer1.fabric
+
+
+
+DEPLOYING CHAINCODE
+Setting env variables
+	export CC_NAME=mycc
+
+Create metadata.json
+	{
+		"type": "ccaas",
+		"label": "mycc"
+	}
+
+
+Create connection.json (Peers to connect to chaincode)
+	{
+		"address": "mycc:7052",
+		"dial_timeout": "10s",
+		"tls_required": false
+	}
+
+
+Create tar files for metadata.json and connection.json
+	tar cfz code.tar.gz connection.json
+
+	tar cfz ${CC_NAME}-external.tgz metadata.json code.tar.gz
+
+
+Create package id
+	PACKAGE_ID=$(kubectl-hlf chaincode calculatepackageid --path=$CC_NAME-external.tgz --language=node --label=$CC_NAME)
+
+
+
+Install chaincode to anchor peers
+	kubectl hlf chaincode install --path=./${CC_NAME}-external.tgz --config=networkConfig.yaml --language=node --label=$CC_NAME --user=admin --peer=org1-peer1.fabric
+
+	kubectl hlf chaincode install --path=./${CC_NAME}-external.tgz --config=networkConfig.yaml --language=node --label=$CC_NAME --user=admin --peer=org2-peer1.fabric
+
+
+
+Build docker image and push to dockerhub
+
+
+
+Deploy chaincode
+	kubectl hlf externalchaincode sync --image=lusajo143/basic-chaincode:1.0.0 --name=$CC_NAME --namespace=fabric --package-id=$PACKAGE_ID --tls-required=false --replicas=1
+
+
+Approve chaincode
+	kubectl hlf chaincode approveformyorg --config=networkConfig.yaml --user=admin --peer=org1-peer1.fabric --package-id=$PACKAGE_ID --version 1.0 --sequence 1 --name=$CC_NAME --policy="OR('Org1MSP.member','Org2MSP.member')" --channel=mychannel
+
+	kubectl hlf chaincode approveformyorg --config=networkConfig.yaml --user=admin --peer=org2-peer1.fabric --package-id=$PACKAGE_ID --version 1.0 --sequence 1 --name=$CC_NAME --policy="OR('Org1MSP.member','Org2MSP.member')" --channel=mychannel
+
+
+
+COMMIT CHAINCODE
+	kubectl hlf chaincode commit --config=networkConfig.yaml --mspid=Org1MSP --user=admin --version 1.0 --sequence 1 --name=$CC_NAME --policy="OR('Org1MSP.member','Org2MSP.member')" --channel=mychannel
+
+
+
+INVOKE CHAINCODE
+	kubectl hlf chaincode invoke --config=networkConfig.yaml --user=admin --peer=org1-peer1.fabric --chaincode=$CC_NAME --channel=mychannel --fcn=InitLedger -a ""
+
+
+QUERY CHAINCODE
+	kubectl hlf chaincode query --config=networkConfig.yaml --user=admin --peer=org1-peer1.fabric --chaincode=$CC_NAME --channel=mychannel --fcn=GetAllAssets -a ""
+
+
+
+GET NUMBER OF BLOCKS
+	kubectl hlf channel top --channel=mychannel --config=networkConfig.yaml --user=admin -p=org1-peer1.fabric
+
+
+
+GET CHANNEL DETAILS (Can be used to update channel)
+	kubectl hlf channel inspect --channel=mychannel --config=networkConfig.yaml --user=admin -p=org1-peer1.fabric > mychannel.json
+
+
+Port forwarding couchdb
+	kubectl port-forward pod/org1-ca-58b7748447-mdtz9 -n fabric 5984
+
+Default username and password are couchdb
